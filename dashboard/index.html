@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token Radar — pre-token protocols ranked by implied launch value</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">
+    <span class="pulse" aria-hidden="true"></span>
+    <h1>Token Radar</h1>
+    <span class="ver" id="ver">radar-2</span>
+  </div>
+  <div class="stats" id="stats"></div>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button data-view="board" class="on">Board</button>
+  <button data-view="calibration">Calibration</button>
+  <button data-view="live">Token already trading</button>
+  <button data-view="method">Method</button>
+</nav>
+
+<main id="main">
+
+  <section id="view-board" class="view on">
+    <aside class="rail">
+      <div class="field">
+        <label for="q">Search name or slug</label>
+        <input id="q" type="search" placeholder="e.g. gauntlet, dex, base" autocomplete="off">
+      </div>
+
+      <div class="field">
+        <label for="f-cat">Category <span class="hint" id="cat-count"></span></label>
+        <select id="f-cat"><option value="">All categories</option></select>
+      </div>
+
+      <div class="field">
+        <label for="f-chain">Chain <span class="hint" id="chain-count"></span></label>
+        <select id="f-chain"><option value="">All chains</option></select>
+      </div>
+
+      <div class="field">
+        <label for="f-tvl">TVL floor</label>
+        <input id="f-tvl" type="range" min="0" max="5" step="1" value="0">
+        <output id="f-tvl-out">any size</output>
+      </div>
+
+      <div class="field">
+        <label>Scope</label>
+        <div class="chips" id="scope">
+          <button data-scope="all" class="on">Every pre-token protocol</button>
+          <button data-scope="watchlist">Watchlist only</button>
+          <button data-scope="calibrated">Calibrated categories</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Sort</label>
+        <div class="chips" id="sort">
+          <button data-sort="rank" class="on">Rank</button>
+          <button data-sort="implied">Implied value</button>
+          <button data-sort="tvl">TVL</button>
+          <button data-sort="growth">7d growth</button>
+          <button data-sort="age">Age, oldest first</button>
+        </div>
+      </div>
+
+      <p class="note" id="filter-note"></p>
+    </aside>
+
+    <div class="board-wrap">
+      <table class="board">
+        <thead>
+          <tr>
+            <th class="num">#</th>
+            <th>Protocol</th>
+            <th>Category</th>
+            <th class="num">TVL</th>
+            <th class="num">7d</th>
+            <th class="num">No token for</th>
+            <th class="num">Implied value</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <p class="empty" id="empty" hidden>No protocol matches those filters. Loosen one.</p>
+      <p class="more" id="more"></p>
+    </div>
+  </section>
+
+  <section id="view-detail" class="view">
+    <a class="back" href="#/board">&larr; Board</a>
+    <div id="detail"></div>
+  </section>
+
+  <section id="view-calibration" class="view">
+    <div class="prose">
+      <h2>The multiple is measured, not assumed</h2>
+      <p>
+        The snapshot records both TVL and market cap for <strong id="cal-live"></strong> protocols whose
+        token already trades. For each category, the model takes the <em>median</em> of
+        market&nbsp;cap&nbsp;/&nbsp;TVL across those protocols and uses it as the multiple a launch in
+        that category would carry. A category needs three trading peers to calibrate on its own;
+        thinner ones fall back to the median across all trading protocols,
+        <strong id="cal-global"></strong>&times;.
+      </p>
+      <p>
+        Nothing here is a hardcoded list of names. Feed the model a different snapshot and it
+        recalibrates from that snapshot's own market.
+      </p>
+    </div>
+    <table class="cal">
+      <thead>
+        <tr><th>Category</th><th class="num">Multiple</th><th class="num">Peers</th><th>Source</th><th>Where it lands</th></tr>
+      </thead>
+      <tbody id="cal-rows"></tbody>
+    </table>
+  </section>
+
+  <section id="view-live" class="view">
+    <div class="prose">
+      <h2>Already trading — kept out of the ranking</h2>
+      <p>
+        These protocols have a token with a market cap in the snapshot. A radar that mixes them into
+        the board ranks launches against things that already happened, so they are shown here at their
+        recorded value and never scored. Their multiples are the calibration set above.
+      </p>
+    </div>
+    <table class="board">
+      <thead>
+        <tr><th class="num">#</th><th>Protocol</th><th>Ticker</th><th>Category</th><th class="num">TVL</th><th class="num">Market cap</th><th class="num">MC / TVL</th></tr>
+      </thead>
+      <tbody id="live-rows"></tbody>
+    </table>
+  </section>
+
+  <section id="view-method" class="view">
+    <div class="prose">
+      <h2>How a row is scored</h2>
+      <p>Every pre-token protocol in the snapshot is scored by one function. No name is special-cased.</p>
+      <pre class="formula">base    = tvl_usd &times; categoryMultiple(category)
+growth  = clamp(change_7d, &minus;50, +100) &divide; 100 &times; 0.6
+tenure  = 0.75 + min(age_days, 1095) &divide; 1095 &times; 0.50
+reach   = 1 + min(chains &minus; 1, 12) &times; 0.02
+
+implied = base &times; (1 + growth) &times; tenure &times; reach</pre>
+      <dl class="why">
+        <dt>categoryMultiple</dt>
+        <dd>The median market-cap-to-TVL multiple the snapshot's own trading protocols in that category
+          carry. This is what a launch in that category is worth per dollar of TVL, measured.</dd>
+        <dt>growth</dt>
+        <dd>Seven-day TVL change, clamped to &minus;50%..+100% and weighted 0.6. A protocol losing TVL is
+          a launch losing its reason; one adding it is being used right now.</dd>
+        <dt>tenure</dt>
+        <dd>How long it has run with no token. A protocol four years in has built usage a launch would
+          finally price; a two-week-old one has a story, not a business. Ramps 0.75 to 1.25 over three
+          years; an unrecorded age takes 0.95.</dd>
+        <dt>reach</dt>
+        <dd>Chains it is deployed on. Fourteen chains is fourteen communities reachable at launch.
+          +2% a chain, capped at twelve.</dd>
+      </dl>
+      <h2>What the board is not</h2>
+      <p>
+        The implied value is the model's claim about what a launch could be worth, not a forecast of a
+        price and not advice. A protocol at the bottom of the board is no worse a subject than one at
+        the top: it is smaller, or shrinking, or new, and the plan for it says so.
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot" id="foot"></footer>
+
+<script src="../data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

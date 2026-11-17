@@ -116,8 +116,9 @@
       $('detail').innerHTML = '<p class="more">No protocol called ' + esc(slug) + ' on the board.</p>';
       return;
     }
-    var m = r.category_multiple;
-    var base = r.tvl_usd * m;
+    var m = r.multiple_at_size;
+    var base = r.implied_value_usd / (r.growth_multiplier * r.tenure_multiplier * r.reach_multiplier);
+    var fit = R.fit;
     var chains = r.chains.map(function (c) { return '<li>' + esc(c) + '</li>'; }).join('');
 
     $('detail').innerHTML =
@@ -145,17 +146,18 @@
           '<h3>How the value was reached</h3>' +
           '<table class="breakdown">' +
             '<tr><td>TVL</td><td>' + usd(r.tvl_usd) + '</td></tr>' +
-            '<tr><td>&times; ' + esc(r.category || 'category') + ' multiple</td><td>' + m.toFixed(3) + '&times;</td></tr>' +
-            '<tr><td>= base</td><td>' + usd(base) + '</td></tr>' +
+            '<tr><td>power law: ' + fit.a.toFixed(0) + ' &times; TVL^' + fit.b.toFixed(3) + '</td><td>' + usd(base) + '</td></tr>' +
+            '<tr><td>= implied multiple at this size</td><td>' + m.toFixed(3) + '&times;</td></tr>' +
             '<tr><td>&times; growth ' + (r.growth_multiplier >= 1 ? '+' : '') +
               ((r.growth_multiplier - 1) * 100).toFixed(0) + '%</td><td>' + r.growth_multiplier.toFixed(3) + '&times;</td></tr>' +
             '<tr><td>&times; tenure</td><td>' + r.tenure_multiplier.toFixed(3) + '&times;</td></tr>' +
             '<tr><td>&times; reach</td><td>' + r.reach_multiplier.toFixed(3) + '&times;</td></tr>' +
             '<tr class="total"><td>= implied</td><td>' + usd(r.implied_value_usd) + '</td></tr>' +
           '</table>' +
-          '<p class="note">The multiple is the median market-cap-to-TVL of ' + r.category_sample +
-            ' trading ' + (r.category_source === 'calibrated' ? esc(r.category) + ' protocols' : 'protocols (this category is too thin to calibrate)') +
-            ' in this snapshot.</p>' +
+          '<p class="note">The base is the power law fitted on ' + fit.sample +
+            ' trading protocols, not a category average: at ' + usd(r.tvl_usd) +
+            ' of TVL it implies ' + m.toFixed(3) + '&times;. Out of sample it is off by ' +
+            fit.walkForwardSmapePct.toFixed(0) + '% typically (median, walk-forward).</p>' +
           '<h3 style="margin-top:22px">Deployed on</h3>' +
           '<ul class="chainlist">' + chains + '</ul>' +
         '</aside>' +
@@ -164,33 +166,51 @@
 
   // ---------------------------------------------------------------- calibration
 
-  function renderCalibration() {
-    $('cal-live').textContent = R.global_sample;
-    $('cal-global').textContent = R.global_multiple.toFixed(3);
+  function renderModel() {
+    var f = R.fit;
 
-    var counts = {};
-    R.rows.forEach(function (r) {
-      var k = r.category || 'Uncategorised';
-      counts[k] = (counts[k] || 0) + 1;
-    });
+    $('model-sample').textContent = f.sample;
+    $('model-headline').innerHTML =
+      'mcap = <strong>' + f.a.toFixed(0) + '</strong> &times; TVL<sup><strong>' + f.b.toFixed(3) +
+      '</strong></sup>';
 
-    var max = R.calibration.length ? R.calibration[0].multiple : 1;
-    $('cal-rows').innerHTML = R.calibration.map(function (c) {
-      var width = Math.round((c.multiple / max) * 100);
-      return '<tr>' +
-        '<td>' + esc(c.category) + '</td>' +
-        '<td class="num mult">' + c.multiple.toFixed(3) + '&times;</td>' +
-        '<td class="num">' + c.sample + '</td>' +
-        '<td>calibrated</td>' +
-        '<td><span class="bar" style="width:120px"><i style="width:' + width + '%"></i></span> ' +
-          (counts[c.category] || 0) + ' pre-token</td>' +
+    var rows = [
+      { name: 'Power law (this model)', loo: f.looSmapePct, walk: f.walkForwardSmapePct, cls: 'win' },
+      { name: 'Flat multiple', loo: f.flatLooSmapePct, walk: f.flatWalkForwardSmapePct, cls: '' },
+      { name: 'Per-category medians', loo: f.categoryLooSmapePct, walk: f.categoryWalkForwardSmapePct, cls: '' }
+    ];
+    var worst = 0;
+    rows.forEach(function (r) { worst = Math.max(worst, r.loo, r.walk); });
+
+    $('val-rows').innerHTML = rows.map(function (r) {
+      function bar(v) {
+        var w = Math.round((v / worst) * 100);
+        return '<span class="bar" style="width:90px"><i style="width:' + w + '%"></i></span>';
+      }
+      return '<tr class="' + r.cls + '">' +
+        '<td>' + esc(r.name) + '</td>' +
+        '<td class="num">' + r.loo.toFixed(1) + '%</td>' +
+        '<td>' + bar(r.loo) + '</td>' +
+        '<td class="num">' + r.walk.toFixed(1) + '%</td>' +
+        '<td>' + bar(r.walk) + '</td>' +
         '</tr>';
-    }).join('') +
-      '<tr><td><span class="mut">all categories (fallback)</span></td>' +
-      '<td class="num mult">' + R.global_multiple.toFixed(3) + '&times;</td>' +
-      '<td class="num">' + R.global_sample + '</td>' +
-      '<td><span class="mut">fallback</span></td>' +
-      '<td><span class="mut">used where a category has under 3 trading peers</span></td></tr>';
+    }).join('');
+
+    var best = Math.max.apply(null, f.sizeBands.map(function (b) { return b.multiple; }));
+    $('band-rows').innerHTML = f.sizeBands.map(function (b) {
+      var w = Math.max(2, Math.round((b.multiple / best) * 100));
+      return '<tr>' +
+        '<td>' + esc(b.label) + '</td>' +
+        '<td class="num mult">' + b.multiple.toFixed(3) + '&times;</td>' +
+        '<td><span class="bar" style="width:140px"><i style="width:' + w + '%"></i></span></td>' +
+        '<td class="num">' + b.count + '</td>' +
+        '</tr>';
+    }).join('');
+
+    $('model-note').textContent =
+      'Fitted on ' + f.sample + ' protocols whose token already trades, then scored on data the fit ' +
+      'never saw. Leave-one-out refits ' + f.sample + ' times; walk-forward trains on earlier-listed ' +
+      'protocols and scores later ones, which is the direction this radar works in.';
   }
 
   // ---------------------------------------------------------------- live
@@ -271,7 +291,7 @@
     }
     var v = h.replace('#/', '') || 'board';
     if (['board', 'calibration', 'live', 'method'].indexOf(v) < 0) v = 'board';
-    if (v === 'calibration') renderCalibration();
+    if (v === 'calibration') renderModel();
     if (v === 'live') renderLive();
     if (v === 'board') renderBoard();
     show(v);

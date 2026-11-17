@@ -19,7 +19,7 @@
 
 <nav class="tabs" id="tabs">
   <button data-view="board" class="on">Board</button>
-  <button data-view="calibration">Calibration</button>
+  <button data-view="calibration">Model &amp; validation</button>
   <button data-view="live">Token already trading</button>
   <button data-view="method">Method</button>
 </nav>
@@ -100,26 +100,59 @@
 
   <section id="view-calibration" class="view">
     <div class="prose">
-      <h2>The multiple is measured, not assumed</h2>
+      <h2>The multiple is measured, then tested on data it never saw</h2>
       <p>
-        The snapshot records both TVL and market cap for <strong id="cal-live"></strong> protocols whose
-        token already trades. For each category, the model takes the <em>median</em> of
-        market&nbsp;cap&nbsp;/&nbsp;TVL across those protocols and uses it as the multiple a launch in
-        that category would carry. A category needs three trading peers to calibrate on its own;
-        thinner ones fall back to the median across all trading protocols,
-        <strong id="cal-global"></strong>&times;.
+        The snapshot records both TVL and market cap for <strong id="model-sample"></strong> protocols
+        whose token already trades. Fitting those two against each other gives the model the board uses:
       </p>
+      <p class="headline" id="model-headline"></p>
       <p>
-        Nothing here is a hardcoded list of names. Feed the model a different snapshot and it
-        recalibrates from that snapshot's own market.
+        It is a curve, not a constant, because a protocol's market-cap-to-TVL multiple is not constant:
+        it <em>falls</em> as a protocol gets bigger. The bands below are the raw evidence, straight from
+        the snapshot, and the whole reason a single flat multiple loses.
       </p>
     </div>
+
     <table class="cal">
       <thead>
-        <tr><th>Category</th><th class="num">Multiple</th><th class="num">Peers</th><th>Source</th><th>Where it lands</th></tr>
+        <tr><th>TVL band</th><th class="num">Median MC / TVL</th><th></th><th class="num">Protocols</th></tr>
       </thead>
-      <tbody id="cal-rows"></tbody>
+      <tbody id="band-rows"></tbody>
     </table>
+
+    <div class="prose">
+      <h2>What it costs in accuracy</h2>
+      <p>
+        A model that will not state its error beside its rivals' is a claim, not a model. Both tests
+        hold out data the fit never saw. Lower is better.
+      </p>
+    </div>
+
+    <table class="cal">
+      <thead>
+        <tr>
+          <th>Model</th>
+          <th class="num">Leave-one-out</th><th></th>
+          <th class="num">Walk-forward</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="val-rows"></tbody>
+    </table>
+
+    <div class="prose">
+      <p class="note" id="model-note"></p>
+      <p>
+        The error is the median symmetric MAPE, so 105% means the typical held-out miss is about a
+        factor of two in either direction. That is large, and it is stated because it is true: a
+        protocol's launch value is not knowable to better than that from TVL alone. The board ranks by
+        it anyway, and the ranking is the model's claim rather than a price.
+      </p>
+      <p>
+        The category medians the first version of this radar used lost to the power law on both tests
+        and are gone. What survives of category is the structural filter that decides which protocols
+        are candidates at all, not what they are worth.
+      </p>
+    </div>
   </section>
 
   <section id="view-live" class="view">
@@ -142,17 +175,22 @@
   <section id="view-method" class="view">
     <div class="prose">
       <h2>How a row is scored</h2>
-      <p>Every pre-token protocol in the snapshot is scored by one function. No name is special-cased.</p>
-      <pre class="formula">base    = tvl_usd &times; categoryMultiple(category)
+      <p>
+        Every pre-token protocol in the snapshot is scored by one function. No name is special-cased,
+        and no constant is typed in by hand: the curve is fitted on the snapshot at run time.
+      </p>
+      <pre class="formula">fit     = least squares of log(mcap) on log(tvl), over every trading protocol
+base    = fit.a &times; tvl_usd<sup>fit.b</sup>
 growth  = clamp(change_7d, &minus;50, +100) &divide; 100 &times; 0.6
 tenure  = 0.75 + min(age_days, 1095) &divide; 1095 &times; 0.50
 reach   = 1 + min(chains &minus; 1, 12) &times; 0.02
 
 implied = base &times; (1 + growth) &times; tenure &times; reach</pre>
       <dl class="why">
-        <dt>categoryMultiple</dt>
-        <dd>The median market-cap-to-TVL multiple the snapshot's own trading protocols in that category
-          carry. This is what a launch in that category is worth per dollar of TVL, measured.</dd>
+        <dt>fit</dt>
+        <dd>The power law between TVL and market cap, measured on the protocols that already trade.
+          Its exponent is below 1, which is the whole finding: bigger protocols trade at smaller
+          multiples. A flat multiple throws that away, and loses on both held-out tests.</dd>
         <dt>growth</dt>
         <dd>Seven-day TVL change, clamped to &minus;50%..+100% and weighted 0.6. A protocol losing TVL is
           a launch losing its reason; one adding it is being used right now.</dd>
@@ -164,11 +202,22 @@ implied = base &times; (1 + growth) &times; tenure &times; reach</pre>
         <dd>Chains it is deployed on. Fourteen chains is fourteen communities reachable at launch.
           +2% a chain, capped at twelve.</dd>
       </dl>
+      <h2>Which protocols are candidates at all</h2>
+      <p>
+        Pre-token means no market cap, no CoinGecko id and no symbol. On top of that the board applies
+        the snapshot's own structural rule below its size floor: not a bridge, canonical bridge, liquid
+        staking, restaking, restaked BTC or CEX; no version marker at the end of the name; no whole word
+        wrapped, staked or staking; and not an exchange's own product. WBTC is Bitcoin on Ethereum and
+        Binance's staked ETH is a staking receipt, so neither is a protocol waiting on a launch, at any
+        size. Ranking them would put products at the top of a board built to find protocols with no
+        token yet.
+      </p>
       <h2>What the board is not</h2>
       <p>
         The implied value is the model's claim about what a launch could be worth, not a forecast of a
-        price and not advice. A protocol at the bottom of the board is no worse a subject than one at
-        the top: it is smaller, or shrinking, or new, and the plan for it says so.
+        price and not advice. It is off by about a factor of two on held-out data, and the Model tab
+        says so with the numbers. A protocol at the bottom of the board is no worse a subject than one
+        at the top: it is smaller, or shrinking, or new, and its plan says which.
       </p>
     </div>
   </section>

@@ -1,21 +1,37 @@
 // The token radar's model: one snapshot of the protocol universe in, one ranked board out.
 //
-// WHAT THE MODEL DOES, AND WHY IT IS NOT A GUESS
+// WHAT THE MODEL DOES, AND THE EVIDENCE FOR IT
 //
-// The snapshot carries 758 protocols. 128 of them already trade a token, and for those it records both
-// TVL and market cap. That is the calibration set: the multiple a launch would carry is not invented
-// here, it is measured from the snapshot's own trading protocols, per category.
+// The snapshot records both TVL and market cap for 128 protocols whose token already trades. That
+// is the calibration set, and this version is fitted on it and tested on data it never saw:
 //
-//   categoryMultiple(c) = median( mcap_usd / tvl_usd ) over every trading protocol in category c
+//   power law   mcap = a * tvl^b          fitted by least squares in log-log space
+//   category    the median log-residual   of a protocol's category against that power law
 //
-// A DEX in this snapshot trades at 0.34x its TVL, a canonical bridge at 0.75x, a CEX at 0.07x. Those
-// are the numbers below, computed at run time from the same bytes the board is built from, so a
-// different snapshot calibrates a different model. Categories too thin to calibrate (fewer than three
-// trading peers) fall back to the median across every trading protocol, 0.214x.
+// The power law is the whole signal. A flat multiple (what the first version used) is beaten on
+// every held-out test, because a protocol's market-cap-to-TVL multiple is not constant: it falls
+// with size, from a median 0.89x under $8M of TVL to 0.03x above $350M. One exponent captures that
+// whole curve, which is why it wins:
 //
-// A pre-token protocol's implied value is that multiple, moved by three things the snapshot records:
+//   model                                leave-one-out   walk-forward
+//   flat multiple (TVL x const)               134.1%         135.7%
+//   category medians (the first version)      138.8%         135.7%
+//   power law (this version)                 109.1%         104.8%
 //
-//   base    = tvl_usd x categoryMultiple(category)
+// Both tests hold out data the fit never saw: leave-one-out refits 128 times, each time scoring the
+// one protocol left out; walk-forward trains only on protocols listed earlier and scores the ones
+// listed later, which is the direction the radar actually works in — pricing protocols that do not
+// trade yet, using ones that already do. The number is the median symmetric MAPE, so 104.8% means
+// the typical out-of-sample miss is about a factor of two in either direction. That is the honest
+// error, stated because a model that hides it is a claim, not a model.
+//
+// The category shift survives only where it earns its keep: where it did not improve on the power
+// law alone out of sample (it did not — 115.4% against 109.1%), it is gone, and the board uses the
+// power law unshifted. What remains of category is the structural filter, not the price.
+//
+// A pre-token protocol's implied value is that power law, moved by three things the snapshot records:
+//
+//   base    = a * tvl_usd^b
 //   growth  = clamp(change_7d, -50, 100) per cent, weighted 0.6   (a protocol losing TVL is a launch
 //             losing its reason; one adding it is being used right now)
 //   tenure  = 0.75 + min(age_days, 1095) / 1095 x 0.50            (a protocol that has run for years
@@ -26,10 +42,10 @@
 //
 //   implied = max(1, round(base x growth x tenure x reach))
 //
-// No protocol name is special-cased anywhere: one function scores all 342 pre-token protocols, and the
+// No protocol name is special-cased anywhere: one function scores every launch candidate, and the
 // board is that function's output sorted. Protocols whose token already trades are kept out of the
-// ranking entirely and shown in their own view at their recorded market cap, so the board never mixes
-// "will launch" with "has launched".
+// ranking entirely and shown in their own view at their recorded market cap, so the board never
+// mixes "will launch" with "has launched".
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -64,8 +80,6 @@ export interface ModelConstants {
   tenure_days: number;
   reach_per_chain: number;
   reach_max_chains: number;
-  /** A category needs this many trading peers to calibrate on its own. */
-  min_category_sample: number;
   /** Tenure multiplier when the snapshot records no listing date. */
   unknown_age_multiplier: number;
 }
@@ -79,18 +93,14 @@ export const MODEL: ModelConstants = {
   tenure_days: 1095,
   reach_per_chain: 0.02,
   reach_max_chains: 12,
-  min_category_sample: 3,
   unknown_age_multiplier: 0.95,
 };
 
-/** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-2-calibrated';
-
-/** How many pre-token protocols below the watchlist floor the early radar carries, by TVL. */
-export const EARLY_ROWS = 158;
-
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 40;
+
+/** The model's version label: the dashboard names it and the rules quote it. */
+export const MODEL_VERSION = 'radar-3-powerlaw';
 
 /** A farm step: the action, what it costs, and how long it takes. */
 export interface FarmStep {
@@ -116,9 +126,10 @@ export interface BoardRow {
   age_days: number | null;
   implied_value_usd: number;
   model: {
-    category_multiple: number;
-    category_sample: number;
-    category_source: 'calibrated' | 'fallback';
+    fit_a: number;
+    fit_b: number;
+    /** The power law's implied multiple at this protocol's TVL: base / tvl. */
+    multiple_at_size: number;
     growth_pct: number;
     growth_multiplier: number;
     tenure_multiplier: number;
@@ -141,9 +152,7 @@ export interface RadarRow {
   listed_at: string | null;
   age_days: number | null;
   implied_value_usd: number;
-  category_multiple: number;
-  category_sample: number;
-  category_source: string;
+  multiple_at_size: number;
   growth_multiplier: number;
   tenure_multiplier: number;
   reach_multiplier: number;
@@ -164,23 +173,14 @@ export interface LiveRow {
   multiple: number;
 }
 
-/** The calibration table the model derived, shown on the dashboard. */
-export interface Calibration {
-  category: string;
-  multiple: number;
-  sample: number;
-  source: 'calibrated' | 'fallback';
-}
-
+/** Everything the page needs, in one object the page reads as a script. */
 export interface RadarData {
   as_of: string;
   source: string;
   floor_usd: number;
   model_version: string;
   model: ModelConstants;
-  global_multiple: number;
-  global_sample: number;
-  calibration: Calibration[];
+  fit: PowerLawFit;
   rows: RadarRow[];
   live: LiveRow[];
   counts: {
@@ -202,23 +202,6 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
   if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
   const days = Math.round((a - b) / 86_400_000);
   return days >= 0 ? days : 0;
-}
-
-function median(values: number[]): number {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = sorted.length >> 1;
-  return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
-}
-
-/** A protocol records no token at all: no market cap, no CoinGecko id, no symbol. */
-export function isPreToken(p: SnapshotProtocol): boolean {
-  return p.mcap_usd === null && p.gecko_id === null && p.symbol === null;
-}
-
-/** A protocol trades a token and records a market cap to price it by. */
-export function isLiveToken(p: SnapshotProtocol): boolean {
-  return p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0;
 }
 
 /** A name that ends in a version marker: "Uniswap V3", "Foo 2.0". */
@@ -264,39 +247,154 @@ export function isRankable(p: SnapshotProtocol): boolean {
   return isLaunchCandidate(p);
 }
 
-/**
- * The calibration table: for every category the snapshot's trading protocols price, the median
- * market-cap-to-TVL multiple they trade at, and how many protocols that median rests on.
- */
-export function calibrate(snapshot: Snapshot, model: ModelConstants = MODEL): {
-  table: Map<string, Calibration>;
-  global: number;
-  globalSample: number;
-} {
-  const live = snapshot.protocols.filter(isLiveToken);
-  const globalRatios = live.map((p) => (p.mcap_usd as number) / p.tvl_usd);
-  const global = globalRatios.length > 0 ? median(globalRatios) : 0.2;
+/** A protocol records no token at all: no market cap, no CoinGecko id, no symbol. */
+export function isPreToken(p: SnapshotProtocol): boolean {
+  return p.mcap_usd === null && p.gecko_id === null && p.symbol === null;
+}
 
-  const byCategory = new Map<string, number[]>();
-  for (const p of live) {
-    const key = p.category ?? 'Uncategorised';
-    const list = byCategory.get(key);
-    const ratio = (p.mcap_usd as number) / p.tvl_usd;
-    if (list === undefined) byCategory.set(key, [ratio]);
-    else list.push(ratio);
+/** A protocol trades a token and records a market cap to price it by. */
+export function isLiveToken(p: SnapshotProtocol): boolean {
+  return p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0;
+}
+
+/** The power law fitted on the snapshot's own trading protocols: mcap = a * tvl^b. */
+export interface PowerLawFit {
+  /** The coefficient, in whole dollars of tvl^b. */
+  readonly a: number;
+  /** The exponent: how the market-cap-to-TVL multiple scales with size. */
+  readonly b: number;
+  /** How many trading protocols the fit rests on. */
+  readonly sample: number;
+  /** Leave-one-out error: each protocol scored by a fit that never saw it. Median sMAPE, per cent. */
+  readonly looSmapePct: number;
+  /** Walk-forward error: fitted on earlier-listed protocols, scored on later ones. Median sMAPE, per cent. */
+  readonly walkForwardSmapePct: number;
+  /** The same two errors for the flat multiple this model replaced, for comparison. */
+  readonly flatLooSmapePct: number;
+  readonly flatWalkForwardSmapePct: number;
+  /** The same two errors for per-category medians, the first version's model. */
+  readonly categoryLooSmapePct: number;
+  readonly categoryWalkForwardSmapePct: number;
+  /** The median multiple per TVL size band, shown on the page as the evidence the curve exists. */
+  readonly sizeBands: ReadonlyArray<{ label: string; multiple: number; count: number }>;
+}
+
+function smapePct(actual: number, predicted: number): number {
+  return (100 * Math.abs(predicted - actual)) / ((Math.abs(actual) + Math.abs(predicted)) / 2);
+}
+
+function median(values: readonly number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((x, y) => x - y);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+}
+
+/** Least squares in log-log space over the trading protocols. */
+function fitPowerLaw(live: readonly SnapshotProtocol[]): { a: number; b: number } {
+  const xs = live.map((p) => Math.log10(p.tvl_usd));
+  const ys = live.map((p) => Math.log10(p.mcap_usd as number));
+  const mx = xs.reduce((s, v) => s + v, 0) / xs.length;
+  const my = ys.reduce((s, v) => s + v, 0) / ys.length;
+  let num = 0;
+  let den = 0;
+  for (let i = 0; i < xs.length; i += 1) {
+    num += (xs[i]! - mx) * (ys[i]! - my);
+    den += (xs[i]! - mx) ** 2;
+  }
+  const b = num / den;
+  return { a: 10 ** (my - b * mx), b };
+}
+
+/**
+ * Fit the power law on every protocol whose token trades, and score the model two ways on data the
+ * fit never saw: leave-one-out (128 refits, each scoring the one protocol held out) and
+ * walk-forward (fitted on earlier-listed protocols, scored on later ones — the direction the radar
+ * works in). The flat multiple and the per-category medians are scored the same way, because a
+ * model that will not state its error beside its rivals' is a claim, not a model.
+ */
+export function calibrate(snapshot: Snapshot): PowerLawFit {
+  const live = snapshot.protocols.filter(isLiveToken);
+  const { a, b } = fitPowerLaw(live);
+
+  // Leave-one-out.
+  const loo: number[] = [];
+  const looFlat: number[] = [];
+  const looCat: number[] = [];
+  for (let i = 0; i < live.length; i += 1) {
+    const held = live[i]!;
+    const train = live.filter((_, j) => j !== i);
+    const fit = fitPowerLaw(train);
+    const flat = median(train.map((p) => (p.mcap_usd as number) / p.tvl_usd));
+    loo.push(smapePct(held.mcap_usd as number, fit.a * held.tvl_usd ** fit.b));
+    looFlat.push(smapePct(held.mcap_usd as number, flat * held.tvl_usd));
+    const cat = categoryMedian(train, held);
+    looCat.push(smapePct(held.mcap_usd as number, cat * held.tvl_usd));
   }
 
-  const table = new Map<string, Calibration>();
-  for (const [category, ratios] of byCategory) {
-    if (ratios.length < model.min_category_sample) continue;
-    table.set(category, {
-      category,
-      multiple: Math.round(median(ratios) * 10_000) / 10_000,
-      sample: ratios.length,
-      source: 'calibrated',
+  // Walk-forward: train on earlier-listed, score later ones.
+  const byAge = live.filter((p) => p.listed_at !== null).sort((x, y) => (x.listed_at! < y.listed_at! ? -1 : 1));
+  const walk: number[] = [];
+  const walkFlat: number[] = [];
+  const walkCat: number[] = [];
+  for (let k = 1; k < 5; k += 1) {
+    const cut = Math.floor((byAge.length * k) / 5);
+    const train = byAge.slice(0, cut);
+    const test = byAge.slice(cut);
+    if (train.length < 10 || test.length === 0) continue;
+    const fit = fitPowerLaw(train);
+    const flat = median(train.map((p) => (p.mcap_usd as number) / p.tvl_usd));
+    for (const held of test) {
+      walk.push(smapePct(held.mcap_usd as number, fit.a * held.tvl_usd ** fit.b));
+      walkFlat.push(smapePct(held.mcap_usd as number, flat * held.tvl_usd));
+      walkCat.push(smapePct(held.mcap_usd as number, categoryMedian(train, held) * held.tvl_usd));
+    }
+  }
+
+  // The size bands: the raw evidence that the multiple is not constant.
+  const sorted = [...live].sort((x, y) => x.tvl_usd - y.tvl_usd);
+  const bands: Array<{ label: string; multiple: number; count: number }> = [];
+  const BANDS = 6;
+  const per = Math.floor(sorted.length / BANDS);
+  for (let i = 0; i < BANDS; i += 1) {
+    const chunk = sorted.slice(i * per, i === BANDS - 1 ? sorted.length : (i + 1) * per);
+    if (chunk.length === 0) continue;
+    const lo = chunk[0]!.tvl_usd;
+    const hi = chunk[chunk.length - 1]!.tvl_usd;
+    bands.push({
+      label: `${moneyLabel(lo)}–${moneyLabel(hi)}`,
+      multiple: Math.round(median(chunk.map((p) => (p.mcap_usd as number) / p.tvl_usd)) * 1000) / 1000,
+      count: chunk.length,
     });
   }
-  return { table, global: Math.round(global * 10_000) / 10_000, globalSample: globalRatios.length };
+
+  return {
+    a: Math.round(a * 1000) / 1000,
+    b: Math.round(b * 1000) / 1000,
+    sample: live.length,
+    looSmapePct: Math.round(median(loo) * 10) / 10,
+    walkForwardSmapePct: Math.round(median(walk) * 10) / 10,
+    flatLooSmapePct: Math.round(median(looFlat) * 10) / 10,
+    flatWalkForwardSmapePct: Math.round(median(walkFlat) * 10) / 10,
+    categoryLooSmapePct: Math.round(median(looCat) * 10) / 10,
+    categoryWalkForwardSmapePct: Math.round(median(walkCat) * 10) / 10,
+    sizeBands: bands,
+  };
+}
+
+/** The held-out protocol's own category median from the training fold, or the global median. */
+function categoryMedian(train: readonly SnapshotProtocol[], held: SnapshotProtocol): number {
+  const ratios = train
+    .filter((p) => p.category === held.category)
+    .map((p) => (p.mcap_usd as number) / p.tvl_usd);
+  if (ratios.length >= 3) return median(ratios);
+  return median(train.map((p) => (p.mcap_usd as number) / p.tvl_usd));
+}
+
+function moneyLabel(usd: number): string {
+  if (usd >= 1e9) return `$${(usd / 1e9).toFixed(0)}B`;
+  if (usd >= 1e6) return `$${(usd / 1e6).toFixed(0)}M`;
+  return `$${Math.round(usd).toLocaleString('en-US')}`;
 }
 
 /** One protocol's implied value, with every factor that produced it. */
@@ -304,11 +402,10 @@ export function impliedValue(
   protocol: SnapshotProtocol,
   asOf: string,
   model: ModelConstants,
-  calibration: { table: Map<string, Calibration>; global: number; globalSample: number },
+  fit: PowerLawFit,
 ): BoardRow['model'] & { implied: number } {
-  const key = protocol.category ?? 'Uncategorised';
-  const entry = calibration.table.get(key);
-  const multiple = entry === undefined ? calibration.global : entry.multiple;
+  const base = fit.a * protocol.tvl_usd ** fit.b;
+  const multipleAtSize = base / protocol.tvl_usd;
 
   const growthPct = Math.max(model.growth_floor, Math.min(model.growth_cap, protocol.change_7d ?? 0));
   const growthMultiplier = 1 + (growthPct / 100) * model.growth_weight;
@@ -322,13 +419,12 @@ export function impliedValue(
   const chains = Math.max(1, protocol.chains.length);
   const reachMultiplier = 1 + Math.min(chains - 1, model.reach_max_chains) * model.reach_per_chain;
 
-  const base = protocol.tvl_usd * multiple;
   const implied = Math.max(1, Math.round(base * growthMultiplier * tenureMultiplier * reachMultiplier));
 
   return {
-    category_multiple: multiple,
-    category_sample: entry === undefined ? calibration.globalSample : entry.sample,
-    category_source: entry === undefined ? 'fallback' : 'calibrated',
+    fit_a: fit.a,
+    fit_b: fit.b,
+    multiple_at_size: Math.round(multipleAtSize * 10_000) / 10_000,
     growth_pct: Math.round(growthPct * 10_000) / 10_000,
     growth_multiplier: Math.round(growthMultiplier * 10_000) / 10_000,
     tenure_multiplier: Math.round(tenureMultiplier * 10_000) / 10_000,
@@ -461,11 +557,11 @@ export interface BoardSummary {
 
 /** The ranked board: every pre-token protocol, most valuable first. */
 export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): BoardRow[] {
-  const calibration = calibrate(snapshot, model);
+  const fit = calibrate(snapshot);
   const watchlist = new Set(snapshot.watchlist);
 
   const scored = snapshot.protocols.filter(isLaunchCandidate).map((p) => {
-    const scoredModel = impliedValue(p, snapshot.as_of, model, calibration);
+    const scoredModel = impliedValue(p, snapshot.as_of, model, fit);
     return { protocol: p, model: scoredModel };
   });
 
@@ -475,10 +571,6 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     if (b.protocol.tvl_usd !== a.protocol.tvl_usd) return b.protocol.tvl_usd - a.protocol.tvl_usd;
     return a.protocol.slug < b.protocol.slug ? -1 : a.protocol.slug > b.protocol.slug ? 1 : 0;
   });
-
-  // The watchlist never sinks: a floor protocol is hoisted to the top of its own implied value band,
-  // so a reader who came for the house's own list finds every row of it before the long tail.
-  void watchlist;
 
   return scored.map((entry, index) => {
     const { implied, ...factors } = entry.model;
@@ -535,9 +627,7 @@ export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
     listed_at: row.listed_at,
     age_days: row.age_days,
     implied_value_usd: row.implied_value_usd,
-    category_multiple: row.model.category_multiple,
-    category_sample: row.model.category_sample,
-    category_source: row.model.category_source,
+    multiple_at_size: row.model.multiple_at_size,
     growth_multiplier: row.model.growth_multiplier,
     tenure_multiplier: row.model.tenure_multiplier,
     reach_multiplier: row.model.reach_multiplier,
@@ -549,10 +639,8 @@ export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
 /** Everything the page needs, in one object the page reads as a script. */
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
   const board = buildBoard(snapshot, model);
-  const calibration = calibrate(snapshot, model);
+  const fit = calibrate(snapshot);
   const watchlist = new Set(snapshot.watchlist);
-
-  const calibrationRows: Calibration[] = [...calibration.table.values()].sort((a, b) => b.multiple - a.multiple);
 
   const radar: RadarData = {
     as_of: snapshot.as_of,
@@ -560,9 +648,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     floor_usd: snapshot.floor_usd,
     model_version: MODEL_VERSION,
     model,
-    global_multiple: calibration.global,
-    global_sample: calibration.globalSample,
-    calibration: calibrationRows,
+    fit,
     rows: board.map((row) => radarRow(row, watchlist)),
     live: liveRows(snapshot),
     counts: {

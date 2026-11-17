@@ -136,6 +136,22 @@ export interface BoardRow {
     reach_multiplier: number;
     age_days: number | null;
   };
+  /** Where 200 bootstrap refits put this row's value: the 10th and 90th percentile. */
+  value_low_usd: number;
+  value_high_usd: number;
+  /** Where those same refits put its rank on the board. */
+  rank_low: number;
+  rank_high: number;
+  /** The farm plan's arithmetic, in dollars, so the verdict can be checked rather than trusted. */
+  economics: {
+    deposit_usd: number;
+    share_of_tvl: number;
+    expected_airdrop_usd: number;
+    opportunity_cost_usd: number;
+    gas_usd: number;
+    net_usd: number;
+    verdict: 'FARM' | 'THIN' | 'SKIP';
+  };
   farm_steps: string[];
 }
 
@@ -157,6 +173,14 @@ export interface RadarRow {
   tenure_multiplier: number;
   reach_multiplier: number;
   watchlist: boolean;
+  /** The bootstrap interval: what 200 refits say this row's value and rank could be. */
+  value_low_usd: number;
+  value_high_usd: number;
+  rank_low: number;
+  rank_high: number;
+  /** The farm plan's verdict and its net, so the board can be read as a decision. */
+  verdict: 'FARM' | 'THIN' | 'SKIP';
+  net_usd: number;
   farm_steps: string[];
 }
 
@@ -520,25 +544,77 @@ function positionSize(tvl: number): { amount: number; label: string } {
 function money(usd: number): string {
   if (usd >= 1e9) return `$${(usd / 1e9).toFixed(2)}B`;
   if (usd >= 1e6) return `$${(usd / 1e6).toFixed(0)}M`;
+  if (usd >= 1e3) return `$${(usd / 1e3).toFixed(1)}k`;
   return `$${Math.round(usd).toLocaleString('en-US')}`;
 }
 
-/** The plan: five to eight steps, each with a cost and a time. */
+/** A dollar figure that keeps cents where a cent is the difference between farm and skip. */
+function dollars(usd: number): string {
+  const abs = Math.abs(usd);
+  const sign = usd < 0 ? '-' : '';
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(1)}k`;
+  return `${sign}$${abs.toFixed(2)}`;
+}
+
+/**
+ * The farm plan's economics, stated as arithmetic rather than advice.
+ *
+ * A pre-token launch pays its users a share of the float, so what one depositor expects is
+ * implied value x the community allocation x their share of TVL x the chance the launch happens
+ * inside a year. Against that: the capital is locked, so it forgoes the risk-free rate, and the
+ * deposit costs gas in and out. The subtraction decides the verdict, and every term is printed so
+ * the reader can disagree with a number instead of with a conclusion.
+ */
+const COMMUNITY_ALLOCATION = 0.10;
+const LAUNCH_PROBABILITY = 0.60;
+const OPPORTUNITY_APY = 0.05;
+const HOLD_WEEKS = 4;
+const GAS_ROUND_TRIP_USD = 30;
+
+export function farmEconomics(tvl: number, implied: number): BoardRow['economics'] {
+  const deposit = positionSize(tvl).amount;
+  const share = deposit / tvl;
+  const expected = implied * COMMUNITY_ALLOCATION * share * LAUNCH_PROBABILITY;
+  const opportunity = deposit * OPPORTUNITY_APY * (HOLD_WEEKS / 52);
+  const net = expected - opportunity - GAS_ROUND_TRIP_USD;
+  const verdict: 'FARM' | 'THIN' | 'SKIP' = net <= 0 ? 'SKIP' : net < 2 * GAS_ROUND_TRIP_USD ? 'THIN' : 'FARM';
+  return {
+    deposit_usd: deposit,
+    share_of_tvl: share,
+    expected_airdrop_usd: expected,
+    opportunity_cost_usd: opportunity,
+    gas_usd: GAS_ROUND_TRIP_USD,
+    net_usd: net,
+    verdict,
+  };
+}
+
+/** The plan: eight steps, each with a cost and a time, ending in a verdict that adds up. */
 export function farmSteps(p: SnapshotProtocol, age: number | null, implied: number): string[] {
   const a = archetypeOf(p.category);
   const chains = p.chains.length > 0 ? p.chains : ['Ethereum'];
   const where = chains.slice(0, 3).join(', ');
   const size = positionSize(p.tvl_usd);
   const ageText = age === null ? 'an unrecorded age' : `${age} days`;
+  const econ = farmEconomics(p.tvl_usd, implied);
+  const multiple = implied / p.tvl_usd;
+  const verdictLine =
+    econ.verdict === 'SKIP'
+      ? `Do not deposit: the arithmetic is negative, so this one is a pass, not a position.`
+      : econ.verdict === 'THIN'
+        ? `Deposit only what you would leave for a year without checking: the edge is thin.`
+        : `The edge is positive, so this is worth a real position sized as above.`;
 
   return [
     `Open the protocol on ${where}: it ${a.verb}, holds ${money(p.tvl_usd)} of TVL across ${chains.length} chain${chains.length === 1 ? '' : 's'}, and has run ${ageText} with no token. Cost: nothing to look. Time: 5 minutes.`,
-    `Read its docs for a points, XP or deposit-receipt programme before you commit capital. If it has none, the position is still worth holding for the launch snapshot, but nothing accrues daily. Cost: nothing. Time: 15 minutes.`,
-    `${a.action[0]!.toUpperCase()}${a.action.slice(1)}. Size it at ${size.label}, which is ${(0.05).toFixed(2)}% of its TVL and small enough that a total loss does not matter. Cost: ${a.friction}. Time: 10 minutes to open.`,
-    `Keep the position open for a minimum of four weeks, and check in weekly for a snapshot date announcement. Most programmes count balance at an unannounced block, so a position closed early usually scores nothing. Cost: ${a.friction.split(' plus ')[0]}. Time: 4 weeks held, 5 minutes a week to check.`,
-    `Spread across ${chains.length > 1 ? `at least two of its ${chains.length} chains` : 'the one chain it runs on'} if it supports more than one, since a launch usually weights per-chain usage. Cost: gas per chain, about $5 to $20 each. Time: 20 minutes.`,
-    `Record what you put in and when, in a spreadsheet with the date, the asset, the amount and the wallet. A launch claim is per-wallet and per-snapshot, and reconstructing it from chain history afterwards costs hours. Cost: nothing. Time: 5 minutes.`,
-    `Treat ${money(implied)} as the model's implied value at launch, not a promise: it is ${money(p.tvl_usd)} of TVL at the multiple this snapshot's own ${p.category ?? 'peer'} protocols trade at. Cost: nothing. Time: nothing.`,
+    `Read its docs for a points, XP or deposit-receipt programme before you commit capital. If it has none the position is still worth holding for the launch snapshot, but nothing accrues daily. Cost: nothing. Time: 15 minutes.`,
+    `${a.action[0]!.toUpperCase()}${a.action.slice(1)}. The size the arithmetic below uses is ${size.label}, which is ${(econ.share_of_tvl * 100).toFixed(4)}% of its TVL. Cost: ${a.friction}. Time: 10 minutes to open.`,
+    `The expected airdrop: ${dollars(implied)} of implied value x 10% community allocation x ${(econ.share_of_tvl * 100).toFixed(4)}% of TVL x 60% chance it launches within a year = ${dollars(econ.expected_airdrop_usd)}. Cost: nothing to work out. Time: nothing.`,
+    `The cost side: ${size.label} locked for ${HOLD_WEEKS} weeks forgoes ${dollars(econ.opportunity_cost_usd)} at a 5% risk-free rate, and the round trip costs about ${dollars(econ.gas_usd)} of gas. Cost: ${dollars(econ.opportunity_cost_usd + econ.gas_usd)}. Time: nothing.`,
+    `Net: ${dollars(econ.expected_airdrop_usd)} expected minus ${dollars(econ.opportunity_cost_usd + econ.gas_usd)} of cost = ${dollars(econ.net_usd)}, a ${econ.verdict}. ${verdictLine} Cost: nothing. Time: nothing.`,
+    `Keep any position open for at least ${HOLD_WEEKS} weeks and check in weekly for a snapshot announcement: most programmes count balance at an unannounced block, so closing early usually scores nothing. Cost: ${a.friction.split(' plus ')[0]}. Time: ${HOLD_WEEKS} weeks held, 5 minutes a week.`,
+    `Record the date, asset, amount and wallet in a spreadsheet. A claim is per-wallet and per-snapshot, and reconstructing it from chain history later costs hours. The implied multiple here is ${multiple.toFixed(3)}x TVL, from the power law fitted on this snapshot. Cost: nothing. Time: 5 minutes.`,
   ];
 }
 
@@ -553,6 +629,76 @@ export interface BoardSummary {
   rows: number;
   watchlistCovered: number;
   early: number;
+}
+
+/** A deterministic LCG: the bootstrap must give the same ranges on every run, so it cannot use Math.random. */
+function seeded(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
+function percentile(sorted: number[], q: number): number {
+  if (sorted.length === 0) return 0;
+  const at = Math.min(sorted.length - 1, Math.max(0, Math.round((sorted.length - 1) * q)));
+  return sorted[at]!;
+}
+
+/**
+ * Refit the power law on 200 resamples of the trading protocols and record where each candidate's
+ * value and rank land. A single point estimate hides that the fit itself is uncertain: the snapshot
+ * is 128 protocols, and a different 128 would move the curve. The interval is what the board would
+ * look like under those other snapshots, and it is the honest way to say "rank 3, or 9".
+ */
+function bootstrapRanges(
+  snapshot: Snapshot,
+  candidates: SnapshotProtocol[],
+  model: ModelConstants,
+  draws = 200,
+): Map<string, { valueLow: number; valueHigh: number; rankLow: number; rankHigh: number }> {
+  const live = snapshot.protocols.filter(isLiveToken);
+  const out = new Map<string, { valueLow: number; valueHigh: number; rankLow: number; rankHigh: number }>();
+  if (live.length < 10) {
+    for (const c of candidates) {
+      const v = impliedValue(c, snapshot.as_of, model, calibrate(snapshot)).implied;
+      out.set(c.slug, { valueLow: v, valueHigh: v, rankLow: 0, rankHigh: 0 });
+    }
+    return out;
+  }
+
+  const rand = seeded(0x5eed1e);
+  const values = new Map<string, number[]>();
+  const ranks = new Map<string, number[]>();
+  for (const c of candidates) {
+    values.set(c.slug, []);
+    ranks.set(c.slug, []);
+  }
+
+  for (let draw = 0; draw < draws; draw += 1) {
+    const sample: SnapshotProtocol[] = [];
+    for (let i = 0; i < live.length; i += 1) sample.push(live[Math.floor(rand() * live.length)]!);
+    const fit = fitPowerLaw(sample);
+    const scored = candidates.map((c) => ({ slug: c.slug, value: impliedValue(c, snapshot.as_of, model, fit).implied }));
+    scored.sort((x, y) => y.value - x.value);
+    scored.forEach((entry, index) => {
+      values.get(entry.slug)!.push(entry.value);
+      ranks.get(entry.slug)!.push(index + 1);
+    });
+  }
+
+  for (const c of candidates) {
+    const v = values.get(c.slug)!.sort((a, b) => a - b);
+    const r = ranks.get(c.slug)!.sort((a, b) => a - b);
+    out.set(c.slug, {
+      valueLow: percentile(v, 0.1),
+      valueHigh: percentile(v, 0.9),
+      rankLow: Math.round(percentile(r, 0.1)),
+      rankHigh: Math.round(percentile(r, 0.9)),
+    });
+  }
+  return out;
 }
 
 /** The ranked board: every pre-token protocol, most valuable first. */
@@ -572,10 +718,23 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     return a.protocol.slug < b.protocol.slug ? -1 : a.protocol.slug > b.protocol.slug ? 1 : 0;
   });
 
+  const ranges = bootstrapRanges(snapshot, scored.map((e) => e.protocol), model);
+
   return scored.map((entry, index) => {
     const { implied, ...factors } = entry.model;
+    const range = ranges.get(entry.protocol.slug) ?? {
+      valueLow: implied,
+      valueHigh: implied,
+      rankLow: index + 1,
+      rankHigh: index + 1,
+    };
     return {
       rank: index + 1,
+      value_low_usd: range.valueLow,
+      value_high_usd: range.valueHigh,
+      rank_low: range.rankLow,
+      rank_high: range.rankHigh,
+      economics: farmEconomics(entry.protocol.tvl_usd, implied),
       slug: entry.protocol.slug,
       name: entry.protocol.name,
       category: entry.protocol.category,
@@ -632,6 +791,12 @@ export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
     tenure_multiplier: row.model.tenure_multiplier,
     reach_multiplier: row.model.reach_multiplier,
     watchlist: watchlist.has(row.slug),
+    value_low_usd: row.value_low_usd,
+    value_high_usd: row.value_high_usd,
+    rank_low: row.rank_low,
+    rank_high: row.rank_high,
+    verdict: row.economics.verdict,
+    net_usd: row.economics.net_usd,
     farm_steps: row.farm_steps,
   };
 }

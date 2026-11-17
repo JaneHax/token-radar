@@ -478,3 +478,13 @@ ol.plan li::before {
   .cols { grid-template-columns: 1fr; }
   .cols > aside { border-left: 0; border-top: 1px solid var(--line); }
 }
+
+/* The bootstrap interval under a value, and the farm verdict's net: both are the evidence a reader
+   checks rather than trusts. */
+.rng { display: block; font-size: 10px; color: var(--dim, #7b8794); letter-spacing: .01em; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.v { display: inline-block; padding: 1px 7px; border-radius: 9px; font-size: 10px; font-weight: 700; letter-spacing: .06em; }
+.v-farm { background: rgba(56, 178, 116, .16); color: #3fbf84; }
+.v-thin { background: rgba(224, 173, 62, .16); color: #d9a93a; }
+.v-skip { background: rgba(140, 148, 160, .16); color: #97a1ae; }
+.verdict { margin: 10px 0 4px; font-size: 13px; }
+.big em.iv { display: block; font-style: normal; font-size: 11px; color: var(--dim, #7b8794); margin-top: 4px; }

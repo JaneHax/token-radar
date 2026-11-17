@@ -92,8 +92,11 @@
         '<td class="num">' + pct(r.change_7d) + '</td>' +
         '<td class="num">' + age(r.age_days) + '</td>' +
         '<td class="num implied">' + usd(r.implied_value_usd) +
-          '<span class="bar"><i style="width:' + width + '%"></i></span></td>' +
-        '<td></td>' +
+          '<span class="bar"><i style="width:' + width + '%"></i></span>' +
+          '<span class="rng">' + usd(r.value_low_usd) + '\u2013' + usd(r.value_high_usd) +
+            ' \u00b7 rank ' + r.rank_low + '\u2013' + r.rank_high + '</span></td>' +
+        '<td class="num"><span class="v v-' + r.verdict.toLowerCase() + '">' + r.verdict + '</span>' +
+          '<span class="rng">net ' + sgn(r.net_usd) + '</span></td>' +
         '</tr>';
     }).join('');
 
@@ -108,6 +111,14 @@
   }
 
   // ---------------------------------------------------------------- detail
+
+  function sgn(v) {
+    var s = v < 0 ? '\u2212' : '+';
+    var a = Math.abs(v);
+    if (a >= 1e6) return s + '$' + (a / 1e6).toFixed(2) + 'M';
+    if (a >= 1e3) return s + '$' + (a / 1e3).toFixed(1) + 'k';
+    return s + '$' + a.toFixed(0);
+  }
 
   function renderDetail(slug) {
     var r = null;
@@ -130,7 +141,11 @@
         '</div>' +
       '</div>' +
       '<div class="hero">' +
-        '<div class="big"><span>Implied launch value</span><b>' + usd(r.implied_value_usd) + '</b></div>' +
+        '<div class="big"><span>Implied launch value</span><b>' + usd(r.implied_value_usd) + '</b>' +
+          '<em class="iv">200 bootstrap refits: ' + usd(r.value_low_usd) + '\u2013' + usd(r.value_high_usd) +
+          ', rank ' + r.rank_low + '\u2013' + r.rank_high + '</em></div>' +
+        '<div class="verdict v-' + r.verdict.toLowerCase() + '"><b>' + r.verdict + '</b> ' +
+          'net ' + sgn(r.net_usd) + ' after cost</div>' +
         '<div><span>TVL</span><b>' + usd(r.tvl_usd) + '</b></div>' +
         '<div><span>7d change</span><b>' + pct(r.change_7d) + '</b></div>' +
         '<div><span>No token for</span><b>' + age(r.age_days) + '</b></div>' +

@@ -94,7 +94,7 @@ def main() -> int:
         # every model it was chosen over. This is the evidence the board's ranking rests on, so it is
         # handed over as an image the judge reads rather than only as source. A taller viewport, still
         # inside the gate's 1440 long side and 800 minimum short side, keeps both tables whole.
-        page.set_viewport_size({"width": W, "height": 1080})
+        page.set_viewport_size({"width": W, "height": 1320})
         page.goto(PAGE.as_uri() + "#/calibration")
         page.wait_for_selector("#val-rows tr")
         page.wait_for_timeout(400)

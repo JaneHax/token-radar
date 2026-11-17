@@ -83,7 +83,7 @@
             <th class="num">7d</th>
             <th class="num">No token for</th>
             <th class="num">Implied value</th>
-            <th></th>
+            <th>Verdict</th>
           </tr>
         </thead>
         <tbody id="rows"></tbody>
@@ -140,6 +140,15 @@
     </table>
 
     <div class="prose">
+      <h2>How much the ranking itself moves</h2>
+      <p>
+        The curve is fitted on 128 protocols, and a different 128 would move it. So the fit is refit
+        on 200 resamples of those protocols, and every row's value and rank is recorded each time.
+        The board shows the 10th to 90th percentile of that spread under each value: a row at
+        &ldquo;rank 3&ndash;9&rdquo; is one the snapshot cannot place more precisely than that, and
+        saying so is more useful than a single number pretending to be exact. The resampling is
+        seeded, so the same snapshot always produces the same intervals.
+      </p>
       <p class="note" id="model-note"></p>
       <p>
         The error is the median symmetric MAPE, so 105% means the typical held-out miss is about a

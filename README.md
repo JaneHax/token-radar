@@ -48,6 +48,32 @@ time from the same bytes the board is built from. Protocols whose token already 
 of the ranking entirely and shown at their recorded market cap, so the board never mixes "will
 launch" with "has launched".
 
+## The farm plan is arithmetic, not advice
+
+Every row's plan ends in a verdict that a reader can check, because every term is printed:
+
+```
+expected airdrop = implied value x 10% community allocation x share of TVL x 60% launch chance
+cost             = deposit x 5% risk-free x 4/52 weeks + $30 gas
+net              = expected - cost          ->  FARM (> $60) | THIN (> $0) | SKIP
+```
+
+Because both sides scale with the deposit, the verdict does not depend on position size: it reduces
+to whether the protocol's implied multiple clears about 6.4% of TVL. That is why the board's first
+five rows — Steakhouse, Sentora, Gauntlet, Veda, USDD — all read SKIP despite carrying the largest
+implied values: a $25,000 deposit is nine thousandths of a percent of a $2.75B TVL, so the $58 it
+expects does not cover the $96 the capital forgoes. On the snapshot as it stands, 154 of 198 rows
+are FARM, 37 THIN and 7 SKIP.
+
+## The ranking states its own uncertainty
+
+The curve is fitted on 128 trading protocols, and a different 128 would move it. The fit is
+therefore refit on 200 resamples of those protocols, and every candidate's value and rank is
+recorded each time; each row carries the 10th to 90th percentile of that spread. A row at
+"rank 3–9" is one the snapshot cannot place more precisely, and saying so is more useful than a
+point estimate pretending to be exact. The resampling is seeded, so the same snapshot always
+produces the same intervals — the dossier is byte-identical across runs.
+
 ## What it produces
 
 | File | What it is |
